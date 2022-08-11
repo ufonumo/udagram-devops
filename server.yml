@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Ufonabasi Umo Udacity Server Template
+
+
+#---------------------
+#   PARAMETERS
+#---------------------
+Parameters:
+  EnvironmentName:
+    Description: Environment name for server
+    Type: String
+  launchTempVersionNum:
+    Description: Version number of launch template
+    Type: String
+    Default: 1
+
+Resources:
+  ELBSecGrp:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http access to host server
+      GroupName: security-group-Elb
+      VpcId: 
+        Fn::ImportValue:
+          !Sub ${EnvironmentName}-VPCID
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress: 
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+
+  WebServerSecGrp:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http access to host and SSH from local
+      # GroupName: web-security-group
+      VpcId: 
+        Fn::ImportValue:
+          !Sub ${EnvironmentName}-VPCID
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
+  webAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          echo "It works! Udagram, Udacity!" > index.html
+      ImageId: ami-08d4ac5b634553e16
+      # KeyName: "jump-box-key"
+      SecurityGroups: 
+      - Ref: WebServerSecGrp
+      InstanceType: t3.small
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: "10"
+      
+  webAppASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-PRIV-NETS"
+      LaunchConfigurationName:
+        Ref: webAppLaunchConfig
+      MaxSize: '5'
+      MinSize: '4'
+      TargetGroupARNs:
+      - Ref: WebAppTargetGroup
+
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-pub-net-1"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-pub-net-2"
+      SecurityGroups:
+      - Ref: ELBSecGrp
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppLB
+      Port: '80'
+      Protocol: HTTP
+
+  ELBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: 
+          Ref: 'WebAppTargetGroup'
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: 
+        Ref: 'Listener'
+      Priority: 1
+
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"      
+
+#-------------------------------
+#   OUTPUT
+#-------------------------------
+Outputs:
+  LBUrl:
+    Description: Loadbalancer url
+    Value: !Join
+             - ''
+             - - http://
+               - !GetAtt WebAppLB.DNSName
+    Export:
+      Name: !Sub ${EnvironmentName}-webapp-loadbalancer
